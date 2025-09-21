@@ -21,6 +21,10 @@ from typing import Dict, List, Optional, Any
 import psycopg2
 import psycopg2.extras
 from psycopg2 import sql
+from tools.models.legislation_models import Bill, BillSponsor, BillAction, BillAmendment
+from tools.models.bill_amendment import BillAmendment
+from datetime import datetime
+from typing import Optional, List
 
 # Configure logging
 logging.basicConfig(
@@ -55,67 +59,63 @@ class GovInfoDataConnector:
             self.conn.close()
         logger.info("Database connection closed")
 
-    def parse_govinfo_xml(self, xml_file: Path) -> Optional[Dict[str, Any]]:
-        """Parse govinfo XML file and extract bill data"""
+    def parse_govinfo_xml(self, xml_file: Path) -> Optional[Bill]:
+        """Parse govinfo XML file and extract bill data into Pydantic Bill model"""
         try:
             tree = ET.parse(xml_file)
             root = tree.getroot()
 
-            # Extract basic bill information using actual structure
-            bill_data = {
-                'congress': self._extract_congress(root),
-                'bill_number': self._extract_bill_number(root),
-                'bill_type': self._extract_bill_type(root),
-                'title': self._extract_title(root),
-                'short_title': self._extract_short_title(root),
-                'introduced_date': self._extract_introduced_date(root),
-                'sponsor': self._extract_sponsor(root),
-                'cosponsors': self._extract_cosponsors(root),
-                'actions': self._extract_actions(root),
-                'committees': self._extract_committees(root),
-                'subjects': self._extract_subjects(root),
-                'text_versions': self._extract_text_versions(root),
-                'relationships': self._extract_relationships(root)
-            }
+            # Extract data
+            congress = self._extract_congress(root)
+            bill_number = self._extract_bill_number(root)
+            bill_type_str = self._extract_bill_type(root)
+            title = self._extract_title(root)
+            short_title = self._extract_short_title(root)
+            introduced_date = self._extract_introduced_date(root)
+            sponsor_data = self._extract_sponsor(root)
+            cosponsors_data = self._extract_cosponsors(root)
+            actions_data = self._extract_actions(root)
+            committees_data = self._extract_committees(root)
+            subjects_data = self._extract_subjects(root)
+            text_versions_data = self._extract_text_versions(root)
 
-            return bill_data
+            if not congress or not bill_number:
+                logger.warning(f"Missing essential data in {xml_file}")
+                return None
 
-        except Exception as e:
-            logger.error(f"Failed to parse XML file {xml_file}: {e}")
-            return None
+            # Create BaseBillId
+            base_bill_id = BaseBillId(
+                session=congress,
+                base_print_no=bill_number,
+                bill_type=BillType(bill_type_str) if bill_type_str else BillType.HR
+            )
 
-    def _extract_congress(self, root: ET.Element) -> Optional[int]:
-        """Extract congress number from bill attribute"""
-        congress_str = root.get('congress')
-        return int(congress_str) if congress_str else None
+            # Create Bill
+            bill = Bill(
+                base_bill_id=base_bill_id,
+                title=title or "",
+                summary=short_title or "",  # Use short_title as summary if no summary
+                sponsor=BillSponsor(member=sponsor_data['name']) if sponsor_data else None,
+                actions=[BillAction(
+                    bill_id=BillId(session=congress, print_no=bill_number, version=Version.ORIGINAL),
+                    date=introduced_date,
+                    chamber=Chamber.HOUSE if 'H' in bill_number else Chamber.SENATE,
+                    sequence_no=1,
+                    text=actions_data[0]['description'] if actions_data else "Introduced"
+                )] if actions_data else [],
+                # For amendment, create a basic one with text
+                amendment_map={
+                    Version.ORIGINAL: BillAmendment(
+                        bill_id=BillId(session=congress, print_no=bill_number, version=Version.ORIGINAL),
+                        version=Version.ORIGINAL,
+                        full_text=text_versions_data[0]['content'] if text_versions_data else ""
+                    )
+                },
+                # Other fields default to empty
+            )
 
-    def _extract_bill_number(self, root: ET.Element) -> Optional[str]:
-        """Extract bill number (e.g., 'H.R. 1' -> 'HR1')"""
-        bill_type = root.get('type', '').upper()
-        number_str = root.get('number')
-        if number_str:
-            # Map type to prefix: hr -> HR, s -> S, etc.
-            if bill_type == 'HR':
-                prefix = 'HR'
-            elif bill_type == 'S':
-                prefix = 'S'
-            else:
-                prefix = bill_type
-            return f"{prefix}{number_str.zfill(3)}"  # Pad number to 3 digits if needed
-        # Fallback to legis-num
-        legis_num = root.find('.//legis-num')
-        if legis_num is not None:
-            bill_num = legis_num.text.replace('.', '').replace(' ', '').upper()
-            return bill_num
-        return None
-
-    def _extract_bill_type(self, root: ET.Element) -> Optional[str]:
-        """Extract bill type from attribute"""
-        bill_type = root.get('type', '').upper()
-        if bill_type in ['HR', 'S', 'HJR', 'SJR', 'HCONRES', 'SCONRES', 'HRES', 'SRES']:
-            return bill_type
-        return None
-
+            # Add cosponsors as additional_sponsors (simplified as str)
+            bill.additional_sponsors = [s['name'] for s in cosponsors_data] if
     def _extract_title(self, root: ET.Element) -> Optional[str]:
         """Extract official title"""
         title_elem = root.find('.//official-title')
