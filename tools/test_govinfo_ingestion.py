@@ -25,6 +25,9 @@ from unittest.mock import patch, MagicMock
 import psycopg2
 import psycopg2.extras
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from govinfo_data_connector import GovInfoDataConnector
 
 
@@ -35,18 +38,7 @@ class TestGovInfoIngestion(unittest.TestCase):
     def setUpClass(cls):
         """Set up test environment"""
         cls.test_dir = Path(tempfile.mkdtemp(prefix='govinfo_test_'))
-        cls.db_config = {
-            'host': os.environ.get('TEST_DB_HOST', 'localhost'),
-            'database': os.environ.get('TEST_DB_NAME', 'openleg_test'),
-            'user': os.environ.get('TEST_DB_USER', 'openleg'),
-            'password': os.environ.get('TEST_DB_PASSWORD', 'password'),
-            'port': os.environ.get('TEST_DB_PORT', 5432)
-        }
-
-        # Create test database config file
-        cls.config_file = cls.test_dir / 'test_db_config.json'
-        with open(cls.config_file, 'w') as f:
-            json.dump(cls.db_config, f)
+        cls.db_config = json.load(open('tools/db_config.json', 'r'))
 
         # Initialize connector
         cls.connector = GovInfoDataConnector(cls.db_config)
